@@ -1,0 +1,59 @@
+templates:
+- id: stack
+  run:
+  - api
+  - postgres
+  - frontend
+
+modules:
+  - id: api
+    module: polytope/python
+    params:
+      - id: dev-mode
+        info: Whether to run in dev mode (with hot reload, debugging).
+        type: [default, bool, true]
+    args:
+      id: api
+      image: public.ecr.aws/docker/library/python:3.13-slim-bookworm
+      code: { type: host, path: api }
+      cmd: ./bin/run
+      restart:
+        policy: always
+      services:
+        - { id: api, ports: [{protocol: http, port: 3000, expose-as: 3000}] }
+      env:
+        - { name: HTTP_PORT, value: 3000 }
+        - { name: LOG_LEVEL, value: INFO }
+        - { name: HTTP_DEBUG, value: "#pt-param dev-mode" }
+        - { name: HTTP_AUTORELOAD, value: "#pt-param dev-mode" }
+        - { name: OPPER_API_KEY, value: "#pt-secret opper-api-key" }
+        - { name: POSTGRES_HOSTNAME, value: postgres }
+      mounts:
+        - { path: /root/.cache/, source: { type: volume, scope: project, id: dependency-cache } }
+
+  - id: frontend
+    module: polytope/node
+    args:
+      id: frontend
+      image: node:22-bullseye-slim
+      code: { type: host, path: ./frontend }
+      cmd: ./bin/run
+      env:
+        - { name: PORT, value: 8000 }
+        - { name: REACT_APP_API_BASE_URL, value: "http://localhost:3000" }
+        - { name: PUBLIC_URL, value: "http://localhost:8000" }
+      restart:
+        policy: always
+      services:
+        - id: frontend
+          ports: [{protocol: http, port: 8000, expose-as: 8000}]
+      mounts:
+        - { path: /root/.cache/, source: { type: volume, scope: project, id: dependency-cache }}
+        - { path: /root/.npm/, source: { type: volume, scope: project, id: npm-cache }}
+        - { path: /app/node_modules/, source: { type: volume, scope: project, id: npm-modules }}
+
+  - id: postgres
+    module: polytope/postgres!simple
+    args:
+      image: postgres:17
+      data-volume: { type: volume, scope: project, id: postgres-data }

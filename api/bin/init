@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+
+set -o errexit
+set -o pipefail
+set -o nounset
+[[ "${TRACE:-}" == true ]] && set -o xtrace
+
+readonly project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." &> /dev/null && pwd)"
+cd "$project_root"
+
+export VIRTUAL_ENV="$HOME/.cache/venvs/api"
+export PATH="$VIRTUAL_ENV/bin:$PATH"
+
+retry() {
+  local cmd="$1"
+  local retries="${2:-5}"
+
+  for attempt in $(seq 1 "$retries"); do
+    if eval "$cmd" ; then
+      return 0
+    else
+      echo -e "\033[0;31mCommand failed: $cmd (attempt $attempt/$retries). Retrying...\033[0m"
+      sleep 1
+    fi
+  done
+
+  echo -e "\033[0;31mCommand failed after $retries attempts: $cmd\033[0m" >&2
+  return 1
+}
+
+if [ ! -x "$VIRTUAL_ENV/bin/python" ]; then
+  echo "Setting up virtual env..."
+  PYTHON_CMD="$(command -v python3 || command -v python)"
+  retry "\"$PYTHON_CMD\" -m venv \"$VIRTUAL_ENV\""
+fi
+
+if ! "$VIRTUAL_ENV/bin/python" -m pip --version &>/dev/null; then
+  echo "Installing pip..."
+  retry "\"$VIRTUAL_ENV/bin/python\" -m ensurepip --upgrade"
+fi
+
+if [ ! -x "$VIRTUAL_ENV/bin/uv" ]; then
+  echo "Installing uv..."
+  "$VIRTUAL_ENV/bin/python" -m pip install --disable-pip-version-check --root-user-action=ignore uv
+fi
+
+export UV_NO_PROGRESS=1
+
+retry "uv sync --active --all-extras"
