@@ -26,7 +26,7 @@ async def lifespan(app: FastAPI):
         logger.info("Connected to Postgres")
     except Exception:
         logger.warning("Couldn't connect to Postgres - retrying on next request.")
-    app.state.opper = Opper(api_key=conf.get_opper_api_key())
+    app.state.opper = Opper(http_bearer=conf.get_opper_api_key())
 
     yield
 

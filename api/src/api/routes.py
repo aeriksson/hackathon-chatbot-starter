@@ -2,7 +2,7 @@ from fastapi import APIRouter, Path, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import Annotated, Any, Literal
 
-from opperai import Opper, trace
+from opperai import Opper
 from .clients.postgres import PostgresChatClient
 from .utils import log
 
@@ -172,10 +172,11 @@ class KnowledgeResult(BaseModel):
 
 #### Helper Functions ####
 
-@trace
-def determine_intent(opper: Opper, messages):
+async def determine_intent(opper: Opper, messages, parent_span_id=None):
     """Determine the intent of the user's message."""
-    intent, _ = opper.call(
+    span = await opper.spans.create_async(name="determine_intent")
+
+    response = await opper.call_async(
         name="determine_intent",
         instructions="""
         Analyze the user message and determine their intent. Supported intents are:
@@ -187,20 +188,34 @@ def determine_intent(opper: Opper, messages):
         - unsupported: The request doesn't fit any of the above categories
         """,
         input={"messages": messages},
-        output_type=IntentClassification
+        output_schema=IntentClassification,
+        parent_span_id=parent_span_id
     )
+
+    intent = response.json_payload
+
+    await opper.spans.update_async(
+        span_id=span.id,
+        input={"messages": messages},
+        output=intent
+    )
+
     return intent
 
-@trace
-def search_knowledge_base(intent, query):
+async def search_knowledge_base(intent, query, opper=None, parent_span_id=None):
     """Search the knowledge base for information relevant to the user's query."""
+    span = None
+    if opper:
+        span = await opper.spans.create_async(name="search_knowledge_base")
+
     # Simple keyword matching
     query_terms = query.lower().split()
     results = []
 
     # Filter by intent category if it's a supported category
     category = None
-    if intent.intent in ["troubleshooting", "warranty", "return_policy", "service", "parts"]:
+    intent_value = intent.get("intent") if isinstance(intent, dict) else intent.intent
+    if intent_value in ["troubleshooting", "warranty", "return_policy", "service", "parts"]:
         # Map intent to category
         category_map = {
             "troubleshooting": "troubleshooting",
@@ -209,7 +224,7 @@ def search_knowledge_base(intent, query):
             "service": "service",
             "parts": "parts"
         }
-        category = category_map.get(intent.intent)
+        category = category_map.get(intent_value)
 
     for item in knowledge_base:
         # Filter by category if specified
@@ -228,11 +243,21 @@ def search_knowledge_base(intent, query):
 
     # Sort by relevance and limit results
     results.sort(key=lambda x: x["relevance_score"], reverse=True)
-    return results[:5]  # Return top 5 results
+    top_results = results[:5]  # Return top 5 results
 
-@trace
-def process_message(opper: Opper, messages):
+    if span:
+        await opper.spans.update_async(
+            span_id=span.id,
+            input={"intent": intent, "query": query},
+            output={"results": top_results}
+        )
+
+    return top_results
+
+async def process_message(opper: Opper, messages, parent_span_id=None):
     """Process a user message and return relevant information."""
+    span = await opper.spans.create_async(name="process_message")
+
     # Extract the last user message
     user_message = next(
         (msg["content"] for msg in reversed(messages) if msg["role"] == "user"),
@@ -240,10 +265,10 @@ def process_message(opper: Opper, messages):
     )
 
     # Determine the intent
-    intent = determine_intent(opper, messages)
+    intent = await determine_intent(opper, messages, parent_span_id=span.id)
 
     # Search knowledge base for relevant information
-    kb_results = search_knowledge_base(intent, user_message)
+    kb_results = await search_knowledge_base(intent, user_message, opper=opper, parent_span_id=span.id)
 
     # Format results
     if kb_results:
@@ -251,22 +276,30 @@ def process_message(opper: Opper, messages):
             f"Knowledge Item {i+1}: {item['title']}\n{item['content']}"
             for i, item in enumerate(kb_results)
         ])
-        return {
-            "intent": intent.intent,
+        result = {
+            "intent": intent.get("intent") if isinstance(intent, dict) else intent.intent,
             "kb_results": kb_results,
             "kb_context": kb_context,
             "found_relevant_info": True
         }
     else:
-        return {
-            "intent": intent.intent,
+        result = {
+            "intent": intent.get("intent") if isinstance(intent, dict) else intent.intent,
             "found_relevant_info": False,
             "message": "I couldn't find specific information about that in our knowledge base."
         }
 
-@trace
-def bake_response(opper: Opper, messages, analysis=None):
+    await opper.spans.update_async(
+        span_id=span.id,
+        input={"messages": messages},
+        output=result
+    )
+
+    return result
+
+async def bake_response(opper: Opper, messages, analysis=None, parent_span_id=None):
     """Generate a response using Opper."""
+    span = await opper.spans.create_async(name="bake_response")
     # Create a copy of messages for the AI
     ai_messages = messages.copy()
 
@@ -288,7 +321,7 @@ def bake_response(opper: Opper, messages, analysis=None):
                 })
 
     # Generate response using Opper
-    response, _ = opper.call(
+    response = await opper.call_async(
         name="generate_response",
         instructions="""
         Generate a helpful, friendly but brief response to the user's message in the conversation.
@@ -298,9 +331,18 @@ def bake_response(opper: Opper, messages, analysis=None):
         Be concise and empathetic in your responses.
         """,
         input={"messages": ai_messages},
-        output_type=str,
+        parent_span_id=parent_span_id
     )
-    return response
+
+    result = response.message  # For string outputs, use .message instead of .json_payload
+
+    await opper.spans.update_async(
+        span_id=span.id,
+        input={"messages": ai_messages, "analysis": analysis},
+        output=result
+    )
+
+    return result
 
 #### Routes ####
 
@@ -405,9 +447,16 @@ async def add_chat_message(
     ]
 
     # Process the message with intent detection and knowledge base lookup
-    with opper.traces.start("customer_support_chat"):
-        analysis = process_message(opper, formatted_messages)
-        response = bake_response(opper, formatted_messages, analysis)
+    main_span = await opper.spans.create_async(name="customer_support_chat")
+
+    analysis = await process_message(opper, formatted_messages, parent_span_id=main_span.id)
+    response = await bake_response(opper, formatted_messages, analysis, parent_span_id=main_span.id)
+
+    await opper.spans.update_async(
+        span_id=main_span.id,
+        input={"chat_id": chat_id, "message": request.content},
+        output={"response": response}
+    )
 
     # Add assistant response to database
     (response_id, response_ts) = db.add_message(chat_id, "assistant", response)
