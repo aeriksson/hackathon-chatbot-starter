@@ -35,12 +35,12 @@ modules:
     module: polytope/node
     args:
       id: frontend
-      image: node:22-bullseye-slim
-      code: { type: host, path: ./frontend }
+      image: oven/bun:1.2.18-slim
+      code: { type: host, path: frontend }
       cmd: ./bin/run
       env:
         - { name: PORT, value: 8000 }
-        - { name: REACT_APP_API_BASE_URL, value: "http://localhost:3000" }
+        - { name: VITE_API_BASE_URL, value: "http://localhost:3000" }
         - { name: PUBLIC_URL, value: "http://localhost:8000" }
       restart:
         policy: always
