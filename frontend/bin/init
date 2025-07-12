@@ -5,5 +5,4 @@ set -o pipefail
 set -o nounset
 [[ "${TRACE:-}" == true ]] && set -o xtrace
 
-# NOTE: react-scripts is unmaintained, so gives lots of deprecation warnings
-yarn install 2> >(grep -v warning 1>&2)
+bun install

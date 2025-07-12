@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+set -x
+
 . "$(dirname "$0")/init"
 
-exec yarn run start
+exec bun dev --port "${PORT:-3000}" --host "${HOST:-0.0.0.0}" --clearScreen false

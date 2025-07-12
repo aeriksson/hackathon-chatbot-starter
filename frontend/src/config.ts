@@ -3,9 +3,11 @@ type AppConfig = {
 };
 
 function loadConfig(): AppConfig {
-  const api_base_url = process.env.REACT_APP_API_BASE_URL;
+  const api_base_url = import.meta.env.VITE_API_BASE_URL;
 
-  if (!api_base_url) throw new Error("REACT_APP_API_BASE_URL has not been set.");
+  if (!api_base_url) {
+    throw new Error("VITE_API_BASE_URL has not been set.");
+  }
 
   return { api_base_url };
 }
